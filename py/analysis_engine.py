@@ -149,32 +149,138 @@ def _topic_hits(question: str) -> list[str]:
     return [key for key, (query_words, _) in TOPICS.items() if any(normalize(w) in q for w in query_words)]
 
 
-def _column_score(column: str, question: str, prefer: list[str] | None = None) -> int:
+def _choice_index(meta: dict[str, Any] | None) -> dict[str, str]:
+    """列名→「列名＋選択肢の値」の検索用テキスト。
+
+    以前は列名だけを照合していたため、「お金がない」のように *選択肢* に現れる語で
+    質問されると 0 点になり、対応する列を見つけられなかった。inspect_dataset が
+    列ごとの値・トークンを既に持っているので、それを検索対象に含める。
+    """
+    index: dict[str, str] = {}
+    for column in (meta or {}).get("columns", []):
+        name = column.get("name", "")
+        parts = [name]
+        parts += [str(item.get("value", "")) for item in column.get("values", [])[:12]]
+        parts += [str(item.get("value", "")) for item in column.get("tokens", [])[:12]]
+        index[name] = normalize(" ".join(parts))
+    return index
+
+
+# 照合ノイズになる語（助詞・機能語）。n-gramで拾ってしまうので除く。
+_STOP_FRAGMENTS = {
+    "こと", "もの", "ため", "どの", "くらい", "どのくらい", "ですか", "ますか", "でしょう",
+    "した", "して", "いる", "ある", "ない", "なる", "れる", "られ", "とき", "ところ",
+    "について", "における", "という", "そして", "また", "など", "たち", "人は", "のは",
+    "には", "とは", "から", "まで", "より", "ほど", "だけ", "しか", "でも", "ても",
+}
+
+
+# 同じ意味なのに表記が違う語。設問文は「訪れた」、学生の問いは「訪問」のように
+# ずれるため、問い側に出た語を設問側の言い回しへ広げてから照合する。
+SYNONYMS = {
+    "訪問": ["訪れ", "来訪", "行った"],
+    "来訪": ["訪れ", "訪問"],
+    "再訪": ["また行き", "もう一度"],
+    "認知": ["知って", "聞いたこと"],
+    "検討": ["考えた", "行こうと"],
+    "障壁": ["行かなかった理由", "できなかった理由", "ためらう"],
+    "費用": ["お金", "金額", "予算", "料金"],
+    "お金": ["費用", "金額", "予算"],
+    "意向": ["思いますか", "したいですか", "行きたい"],
+    "属性": ["学年", "性別", "年代"],
+    "学年": ["学部", "院生", "何年"],
+}
+
+
+def _fragments(text: str) -> list[str]:
+    """日本語は分かち書きが無いため、2〜4文字のn-gramで照合する。
+
+    以前は正規表現 [一-龥ぁ-んァ-ヶ]{2,} で切り出していたが、日本語は語の境界に
+    区切り文字が無いため *問い全体が1トークン* になり、どの列名にも一致しなかった。
+    """
+    base = normalize(text)
+    fragments: list[str] = []
+    for size in (4, 3, 2):
+        for start in range(len(base) - size + 1):
+            fragment = base[start:start + size]
+            if fragment in _STOP_FRAGMENTS:
+                continue
+            if re.fullmatch(r"[ぁ-ん]{2}", fragment):   # 「がな」「ての」等の助詞片は捨てる
+                continue
+            fragments.append(fragment)
+    return list(dict.fromkeys(fragments))
+
+
+def _synonym_fragments(text: str) -> list[str]:
+    """問いに出た語を、設問側の言い回しへ広げた候補。
+
+    直接一致より弱く扱う。同点にすると「学年」の同義語『院生』が、
+    実際に「学年」を含む設問より上に来てしまうため。
+    """
+    base = normalize(text)
+    expanded: list[str] = []
+    for word, alternatives in SYNONYMS.items():
+        if word in base:
+            expanded.extend(normalize(alt) for alt in alternatives)
+    return list(dict.fromkeys(expanded))
+
+
+def _column_score(column: str, question: str, prefer: list[str] | None = None,
+                  choice_index: dict[str, str] | None = None) -> int:
     c = normalize(column)
-    q = normalize(question)
+    # 選択肢の値まで含めた検索対象（無ければ列名のみ＝従来動作）
+    haystack = (choice_index or {}).get(column, c)
     score = 0
     for topic in _topic_hits(question):
         if any(normalize(alias) in c for alias in TOPICS[topic][1]):
             score += 20
-    for word in re.findall(r"[一-龥ぁ-んァ-ヶA-Za-z]{2,}", question):
-        token = normalize(word)
-        if len(token) >= 2 and token in c:
-            score += min(8, len(token))
+    for fragment in _fragments(question):
+        if fragment in c:
+            score += len(fragment) * 2          # 設問文に出る語は強い根拠
+        elif fragment in haystack:
+            score += len(fragment)              # 選択肢に出る語は弱めの根拠
+    for fragment in _synonym_fragments(question):
+        if fragment in c:
+            score += len(fragment)              # 言い換え一致は直接一致より弱く
+        elif fragment in haystack:
+            score += 1
     for alias in prefer or []:
         if normalize(alias) in c:
             score += 28
-    if "タイムスタンプ" in column:
+    if "タイムスタンプ" in column or normalize(column) in ("timestamp",):
         score -= 100
     return score
 
 
-def _rank_columns(df: pd.DataFrame, question: str, prefer: list[str] | None = None) -> list[str]:
-    ranked = sorted(
-        df.columns,
-        key=lambda col: (_column_score(str(col), question, prefer), int(df[col].notna().sum())),
-        reverse=True,
-    )
-    return [str(col) for col in ranked if _column_score(str(col), question, prefer) > 0]
+def _rank_columns(df: pd.DataFrame, question: str, prefer: list[str] | None = None,
+                  choice_index: dict[str, str] | None = None) -> list[str]:
+    scored = [(str(col), _column_score(str(col), question, prefer, choice_index),
+               int(df[col].notna().sum())) for col in df.columns]
+    scored = [item for item in scored if item[1] > 0]
+    scored.sort(key=lambda item: (item[1], item[2]), reverse=True)
+    return [name for name, _, _ in scored]
+
+
+# 「AによってBは違うか」「A別のB」のように、比較軸(A)と分析対象(B)を助詞から取り出す。
+# 日本語の分析依頼は型が少ないので、パターンで十分に拾える（LLM不使用）。
+_COMPARISON_PATTERNS = [
+    re.compile(r"(?P<group>.{2,30}?)(?:によって|により|によ)(?P<metric>.{2,40}?)(?:は|が|に)?(?:違|異な|差)"),
+    re.compile(r"(?P<group>.{2,30}?)(?:別|ごと|毎)(?:に|の|で)?(?P<metric>.{2,40})"),
+    re.compile(r"(?P<group>.{2,30}?)(?:で|が)(?P<metric>.{2,40}?)(?:は|が)(?:違|異な|変わ|差)"),
+    re.compile(r"(?P<metric>.{2,40}?)(?:は)(?P<group>.{2,30}?)(?:によって|により|で)(?:違|異な|変わ)"),
+]
+
+
+def _extract_comparison(question: str) -> tuple[str, str]:
+    """比較軸と分析対象の手がかり語を返す。取れなければ ("", "")。"""
+    for pattern in _COMPARISON_PATTERNS:
+        match = pattern.search(question)
+        if match:
+            group = clean(match.group("group"))
+            metric = clean(match.group("metric"))
+            if group and metric:
+                return group, metric
+    return "", ""
 
 
 def _matching_columns(df: pd.DataFrame, aliases: list[str]) -> list[str]:
@@ -223,6 +329,8 @@ def build_plan(df: pd.DataFrame, meta: dict[str, Any], question: str) -> dict[st
             "approvalNote": "同じ回答者の時系列追跡ではないため、『離脱率』ではなく回答時点の構成として解釈します。",
         }
 
+    choice_index = _choice_index(meta)
+
     group_prefer: list[str] = []
     if any(word in q for word in ("年代", "年齢", "若者", "高齢")):
         group_prefer = ["年代", "年齢", "age group"]
@@ -230,12 +338,29 @@ def build_plan(df: pd.DataFrame, meta: dict[str, Any], question: str) -> dict[st
         group_prefer = ["性別", "gender"]
     elif any(word in q for word in ("居住", "都道府県")):
         group_prefer = ["居住", "都道府県", "prefecture"]
-    elif any(word in q for word in ("訪問経験別", "訪問した", "未訪問")):
+    elif any(word in q for word in ("訪問経験", "訪問した", "未訪問")):
         group_prefer = ["訪れたことがありますか", "ever visited"]
 
-    group_candidates = _rank_columns(df, question, group_prefer) if group_prefer else []
+    # 「AによってBは違うか」の形が取れたら、そのA（比較軸）を最優先で使う。
+    # 問い全体から属性語を拾うと、対象側(B)の語を軸と誤認する（例:「学年別の“訪問経験”」で
+    # 訪問経験を軸にしてしまう）ため、抽出できた手がかりを先に当てる。
+    group_hint, metric_hint = _extract_comparison(question)
+    group_candidates: list[str] = []
+    if group_hint:
+        group_candidates = _rank_columns(df, group_hint, None, choice_index)
+    if not group_candidates and group_prefer:
+        # prefer は加点ではなく「その語を含む列だけ」に絞り込む。問い全体で採点すると
+        # 対象側(B)の語が効いて、軸に関係ない列が1位になってしまうため。
+        allowed = set(_matching_columns(df, group_prefer))
+        group_candidates = [col for col in _rank_columns(df, question, group_prefer, choice_index)
+                            if col in allowed]
     group_column = group_candidates[0] if group_candidates else ""
-    metric_candidates = _rank_columns(df, question)
+
+    # 対象語が取れていれば、そちらを優先して分析対象を決める
+    metric_source = metric_hint or question
+    metric_candidates = _rank_columns(df, metric_source, None, choice_index)
+    if not metric_candidates and metric_hint:
+        metric_candidates = _rank_columns(df, question, None, choice_index)
     metric_candidates = [col for col in metric_candidates if col != group_column]
 
     if not metric_candidates:
@@ -250,9 +375,11 @@ def build_plan(df: pd.DataFrame, meta: dict[str, Any], question: str) -> dict[st
             "columnOptions": meta["columns"],
         }
 
-    compare_requested = bool(group_column) and any(word in q for word in ("違い", "比較", "別", "によって", "傾向"))
+    compare_requested = bool(group_column) and (
+        bool(group_hint) or any(word in q for word in ("違い", "違う", "比較", "別", "ごと", "によって", "傾向", "差")))
     analysis_type = "crosstab" if compare_requested else "frequency"
     selected_metrics = metric_candidates[:2] if analysis_type == "crosstab" else metric_candidates[:1]
+    used = _used_questions(meta, group_column, selected_metrics, question, choice_index)
     return {
         "question": question,
         "type": analysis_type,
@@ -266,8 +393,56 @@ def build_plan(df: pd.DataFrame, meta: dict[str, Any], question: str) -> dict[st
             "metricColumns": [_column_info(meta, col) for col in selected_metrics],
         },
         "columnOptions": meta["columns"],
+        "usedQuestions": used,
         "approvalNote": "以下の列と分析方法を確認してから実行してください。",
     }
+
+
+def _why_chosen(column: dict[str, Any], question: str, choice_index: dict[str, str]) -> str:
+    """その設問を選んだ理由を、根拠が見える形の1行で返す。"""
+    name = column.get("name", "")
+    c = normalize(name)
+    hits_name, hits_choice = [], []
+    # 最長一致を優先したいので、長いn-gramから見て包含される短い断片は捨てる
+    for fragment in _fragments(question) + _synonym_fragments(question):
+        if fragment in c:
+            if not any(fragment in seen for seen in hits_name):
+                hits_name.append(fragment)
+        elif fragment in choice_index.get(name, ""):
+            if not any(fragment in seen for seen in hits_choice):
+                hits_choice.append(fragment)
+    # n-gramは重なるので、長い順に最大2件だけ見せる（「平日に熱・日に熱海」のような羅列を避ける）
+    def _top(hits: list[str]) -> str:
+        return "・".join(sorted(hits, key=len, reverse=True)[:2])
+
+    if hits_name:
+        return f"設問文に「{_top(hits_name)}」が含まれるため"
+    if hits_choice:
+        return f"選択肢に「{_top(hits_choice)}」が含まれるため"
+    return "知りたいことと関連する設問のため"
+
+
+def _used_questions(meta: dict[str, Any], group_column: str, metric_columns: list[str],
+                    question: str, choice_index: dict[str, str]) -> list[dict[str, Any]]:
+    """「使う設問はこれです」として画面に出す一覧。役割と選定理由を添える。"""
+    items = []
+    if group_column:
+        info = _column_info(meta, group_column)
+        items.append({
+            "role": "比較軸", "name": group_column,
+            "shortName": info.get("shortName", group_column),
+            "answered": info.get("nonEmpty"),
+            "reason": _why_chosen(info, question, choice_index),
+        })
+    for column in metric_columns:
+        info = _column_info(meta, column)
+        items.append({
+            "role": "分析対象", "name": column,
+            "shortName": info.get("shortName", column),
+            "answered": info.get("nonEmpty"),
+            "reason": _why_chosen(info, question, choice_index),
+        })
+    return items
 
 
 def _first_answer(df: pd.DataFrame, columns: list[str]) -> pd.Series:

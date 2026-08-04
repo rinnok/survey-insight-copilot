@@ -791,3 +791,32 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
     border-left: 0;
   }
 }
+
+/* 「使う設問」パネル（問い確定時に、どの設問を見るかを根拠つきで示す） */
+.used-questions {
+  margin: 1.1rem 0 .4rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid rgba(0, 0, 0, .09);
+  border-left: 3px solid #b0783c;
+  border-radius: 10px;
+  background: rgba(176, 120, 60, .05);
+}
+.used-questions-head { margin: 0 0 .7rem; display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
+.used-questions-head small { opacity: .7; }
+.used-questions ul { margin: 0; padding: 0; list-style: none; display: grid; gap: .55rem; }
+.used-questions li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: .5rem .7rem;
+  align-items: baseline;
+}
+.used-role {
+  font-size: .74rem; font-weight: 700; letter-spacing: .04em;
+  padding: .16rem .5rem; border-radius: 999px;
+  background: rgba(176, 120, 60, .16); color: #7a4f1c; white-space: nowrap;
+}
+.used-role.is-group { background: rgba(60, 110, 180, .16); color: #274c78; }
+.used-name { font-weight: 600; }
+.used-n { font-size: .8rem; opacity: .65; white-space: nowrap; }
+.used-reason { grid-column: 2 / -1; font-size: .8rem; opacity: .7; }
+.used-questions-note { display: block; margin-top: .8rem; font-size: .8rem; opacity: .7; }

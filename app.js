@@ -1664,6 +1664,7 @@ function renderPlan() {
   return `<section class="panel" id="planPanel">
     <div class="panel-head"><div><p class="panel-kicker">STEP 2・人が確認</p><h2>${esc(plan.label)}</h2><p>${esc(plan.reason)}</p></div><span class="privacy-pill">提案確度 ${esc(plan.confidence)}</span></div>
     <dl class="plan-summary"><dt>知りたいこと</dt><dd>${esc(plan.question)}</dd><dt>分析方法</dt><dd>${esc(plan.label)}</dd>${columnText}</dl>
+    ${renderUsedQuestions(plan.usedQuestions)}
     ${selectors}
     <div class="notice">${icons.alert}<span>${esc(plan.approvalNote || '列と方法を確認してください。')}</span></div>
     <div class="button-row"><button class="button button-primary" id="runAnalysis" type="button" ${state.busy ? 'disabled' : ''}>${state.busy ? '<span class="spinner"></span>計算中' : `${icons.check} この計画で分析する`}</button></div>
@@ -1756,6 +1757,22 @@ function bindAnalysis() {
     if (group) group.value = state.plan.columns.groupColumn || '';
     if (metric) metric.value = state.plan.columns.metricColumns?.[0] || '';
   }
+}
+
+// 問いを確定したときに「この問いなら、この設問を見ます」と先に示すパネル。
+// 選定理由（設問文に一致／選択肢に一致）まで出して、外していたら人が直せるようにする。
+function renderUsedQuestions(items) {
+  if (!items || !items.length) return '';
+  return `<div class="used-questions">
+    <p class="used-questions-head"><strong>使う設問：</strong><small>この問いに答えるために、次の設問を見ます</small></p>
+    <ul>${items.map(item => `<li>
+      <span class="used-role ${item.role === '比較軸' ? 'is-group' : ''}">${esc(item.role)}</span>
+      <span class="used-name">${esc(item.shortName || item.name)}</span>
+      ${Number.isFinite(item.answered) ? `<span class="used-n">回答 ${item.answered}</span>` : ''}
+      <small class="used-reason">${esc(item.reason || '')}</small>
+    </li>`).join('')}</ul>
+    <small class="used-questions-note">違う設問を見てほしいときは、下の選択で差し替えてください。</small>
+  </div>`;
 }
 
 async function makePlan() {
