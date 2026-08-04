@@ -266,6 +266,8 @@ function renderWorkspaceHome() {
         <span class="privacy-pill ${ws.llm.connected ? 'ok' : 'warn'}">${esc(llmStatusLabel(ws.llm))}</span>
       </div>
       <button class="button button-primary button-large" id="startConsult" type="button" ${state.sessionBusy ? 'disabled' : ''}>何を明らかにしたいか相談する ${icons.arrow}</button>
+      ${!CHAT_ENABLED ? `<button class="button button-secondary button-large" id="startGeneralAnalysis" type="button">${icons.chart} どのアンケートでも分析する（汎用）</button>
+      <p class="hint-inline">上の「相談する」は熱海DMOの実データ専用の固定分析です。手元のアンケートを試すなら汎用のほうを使ってください。</p>` : ''}
     </section>
     <section class="questionnaire-materials">
       <div class="questionnaire-materials-head">
@@ -292,6 +294,9 @@ function renderWorkspaceHome() {
         </button>`).join('') : '<div class="empty">まだセッションはありません</div>'}</div>
     </section>`;
   document.querySelector('#startConsult').onclick = createSessionAndOpen;
+  // 汎用分析（LLM不要・どのアンケートCSVでも動く）。公開版の主導線。
+  const generalAnalysis = document.querySelector('#startGeneralAnalysis');
+  if (generalAnalysis) generalAnalysis.onclick = () => { state.dataset = null; state.plan = null; state.result = null; setView('analysis'); };
   document.querySelector('#questionnaireFile')?.addEventListener('change', event => startQuestionnaireImport(event.target.files[0]));
   document.querySelectorAll('[data-session-id]').forEach(button => button.onclick = () => openSession(button.dataset.sessionId));
   document.querySelector('#editProjectMeta')?.addEventListener('click', () => { state.projectEditing = true; render(); });
@@ -599,8 +604,74 @@ function renderSessionChat(session) {
       </div>
       ${analysisComplete
         ? '<div class="chat-complete">分析は完了しています。下の結果を確認してください。</div>'
-        : `<form class="chat-composer" id="sessionForm"><textarea id="sessionMessage" rows="2" placeholder="例：学生が熱海を候補にしたのに、なぜ来なかったのか知りたい" ${state.sessionBusy ? 'disabled' : ''}></textarea><button class="send-button" type="submit" aria-label="送信" ${state.sessionBusy ? 'disabled' : ''}>${icons.arrow}</button></form>`}
+        : !CHAT_ENABLED
+          ? renderManualBriefForm(session)
+          : `<form class="chat-composer" id="sessionForm"><textarea id="sessionMessage" rows="2" placeholder="例：学生が熱海を候補にしたのに、なぜ来なかったのか知りたい" ${state.sessionBusy ? 'disabled' : ''}></textarea><button class="send-button" type="submit" aria-label="送信" ${state.sessionBusy ? 'disabled' : ''}>${icons.arrow}</button></form>`}
     </section>`;
+}
+
+// 対話を止めている公開版では、対話の代わりに問いを直接入力して分析へ進む。
+// confirm-question も analyze もLLMを使わないので、この経路は公開版でも完動する。
+const MANUAL_BRIEF_PRESETS = {
+  atami_conversion: {
+    label: '訪問しなかった障壁を調べる',
+    objective: '熱海に行こうと考えたのに訪問しなかった障壁を明らかにする',
+    target: '熱海を検討したが未訪問の大学生',
+    decision: '次に検証する施策候補を絞る',
+  },
+  atami_policy_test: {
+    label: '施策仮説を比較する',
+    objective: '熱海で検証したい施策の候補を比較する',
+    target: '熱海を検討したが未訪問の大学生',
+    decision: '次に検証する施策を1つ選ぶ',
+  },
+};
+
+function renderManualBriefForm(session) {
+  const route = state.manualBriefRoute || 'atami_conversion';
+  const preset = MANUAL_BRIEF_PRESETS[route];
+  const disabled = state.sessionBusy ? 'disabled' : '';
+  return `<div class="brief-proposal manual-brief">
+    <div class="brief-proposal-head"><span>${icons.wand}</span><div><strong>問いを入力して分析する</strong><small>公開版はAI対話を止めているので、明らかにしたいことを直接書いて進めます。<br>※このセッション分析は熱海DMOの実データ（特定の列構成）専用です。手元のアンケートを試すときはホームの「どのアンケートでも分析する（汎用）」を使ってください。</small></div></div>
+    <label>分析ルート<select class="select-input" id="manualBriefRoute" ${disabled}>${Object.entries(MANUAL_BRIEF_PRESETS).map(([value, item]) => `<option value="${value}" ${value === route ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></label>
+    <label>明らかにしたいこと<textarea id="manualBriefObjective" rows="2" ${disabled}>${esc(preset.objective)}</textarea></label>
+    <div class="brief-grid">
+      <label>対象<textarea id="manualBriefTarget" rows="2" ${disabled}>${esc(preset.target)}</textarea></label>
+      <label>支援する判断<textarea id="manualBriefDecision" rows="2" ${disabled}>${esc(preset.decision)}</textarea></label>
+    </div>
+    <button class="button button-primary" id="submitManualBrief" type="button" ${disabled}>${icons.chart} この問いで分析する</button>
+  </div>`;
+}
+
+async function submitManualBrief() {
+  if (state.sessionBusy) return;
+  const brief = {
+    route: document.querySelector('#manualBriefRoute').value,
+    objective: document.querySelector('#manualBriefObjective').value.trim(),
+    target: document.querySelector('#manualBriefTarget').value.trim(),
+    decision: document.querySelector('#manualBriefDecision').value.trim(),
+  };
+  if (!brief.objective || !brief.target || !brief.decision) return toast('明らかにしたいこと・対象・判断をすべて入力してください', true);
+  state.sessionBusy = true;
+  state.mappingNeeded = null;
+  render();
+  try {
+    state.session = (await api(`/api/sessions/${state.session.id}/confirm-question`, {brief})).session;
+    // 第3引数を省くと body 無し＝GET になるため、明示的に POST を指定する
+    state.session = (await api(`/api/sessions/${state.session.id}/analyze`, {}, 'POST')).session;
+    initUiStateFromSession(state.session);
+    await refreshWorkspaceSessions();
+    toast('分析が完了しました');
+    setTimeout(() => document.querySelector('#analysisResults')?.scrollIntoView({behavior: 'smooth', block: 'start'}), 80);
+  } catch (error) {
+    if (error.status === 422 && error.data?.mappingNeeded) {
+      state.mappingNeeded = error.data.mappingNeeded;
+      try { state.session = (await api(`/api/sessions/${state.session.id}`)).session; } catch (_) { /* 対応づけ画面は出す */ }
+      toast('列の対応づけを確認してください', true);
+    } else {
+      toast(error.message, true);
+    }
+  } finally { state.sessionBusy = false; render(); }
 }
 
 function renderSessionAnalysisConfirm() {
@@ -637,6 +708,11 @@ function bindSessionChat() {
   document.querySelector('#sessionForm')?.addEventListener('submit', event => { event.preventDefault(); sendSessionMessage(document.querySelector('#sessionMessage').value); });
   document.querySelector('#confirmSessionBrief')?.addEventListener('click', confirmSessionBrief);
   document.querySelector('#runAnalysisFromProposal')?.addEventListener('click', runAnalysisFromProposal);
+  // 公開版の「問いを入力して分析する」
+  document.querySelector('#submitManualBrief')?.addEventListener('click', submitManualBrief);
+  document.querySelector('#manualBriefRoute')?.addEventListener('change', event => {
+    state.manualBriefRoute = event.target.value; render();
+  });
   setTimeout(() => {
     const action = document.querySelector('#runAnalysisFromProposal');
     if (action) action.scrollIntoView({behavior: 'smooth', block: 'center'});
