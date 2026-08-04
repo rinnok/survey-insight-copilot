@@ -187,9 +187,28 @@ SYNONYMS = {
     "費用": ["お金", "金額", "予算", "料金"],
     "お金": ["費用", "金額", "予算"],
     "意向": ["思いますか", "したいですか", "行きたい"],
+    "来る": ["行きたい", "訪れ", "来訪"],
+    "あったら": ["あれば", "したいこと", "してみたい"],
+    "あれば": ["したいこと", "してみたい"],
     "属性": ["学年", "性別", "年代"],
     "学年": ["学部", "院生", "何年"],
 }
+
+
+# 「どのくらいですか」のような疑問形・言い回しは、内容ではなく文の形。
+# 設問文にも同じ言い回しが出るため、n-gramで拾うと無関係な設問に当たってしまう
+# （例:「…どのくらいか」が「今、旅行に行きたい気持ちはどのくらいですか」に一致）。
+_FUNCTION_PHRASES = (
+    "はどのくらいですか", "どのくらいですか", "どのくらい", "どのような", "どういう",
+    "ですか", "ますか", "でしょうか", "でしたか", "ください", "教えてください",
+    "について", "における", "ということ", "というもの", "しているか", "しますか",
+    "は何か", "は何ですか", "が多いか", "が多い", "でしょう", "でした",
+)
+
+
+def _is_function_fragment(fragment: str) -> bool:
+    """内容語ではなく文の形（疑問形・敬体）の一部なら True。"""
+    return any(fragment in phrase for phrase in _FUNCTION_PHRASES)
 
 
 def _fragments(text: str) -> list[str]:
@@ -203,7 +222,7 @@ def _fragments(text: str) -> list[str]:
     for size in (4, 3, 2):
         for start in range(len(base) - size + 1):
             fragment = base[start:start + size]
-            if fragment in _STOP_FRAGMENTS:
+            if fragment in _STOP_FRAGMENTS or _is_function_fragment(fragment):
                 continue
             if re.fullmatch(r"[ぁ-ん]{2}", fragment):   # 「がな」「ての」等の助詞片は捨てる
                 continue
@@ -225,23 +244,49 @@ def _synonym_fragments(text: str) -> list[str]:
     return list(dict.fromkeys(expanded))
 
 
+def _doc_freq(fragment: str, choice_index: dict[str, str]) -> int:
+    """その語が何列に出るか。多くの列に出る語ほど、列を見分ける力が無い。"""
+    return sum(1 for text in choice_index.values() if fragment in text)
+
+
+def _is_noise(fragment: str, choice_index: dict[str, str]) -> bool:
+    """調査票全体に出る語（例：熱海調査の「熱海」）は識別に使わない。
+
+    これを入れないと、ほぼ全列に含まれる語が全列へ一律に加点し、
+    本命の一致が無いときにその点数だけで順位が決まってしまう。
+    """
+    total = len(choice_index)
+    if total < 4:
+        return False
+    return _doc_freq(fragment, choice_index) > total / 2
+
+
 def _column_score(column: str, question: str, prefer: list[str] | None = None,
                   choice_index: dict[str, str] | None = None) -> int:
     c = normalize(column)
+    index = choice_index or {}
     # 選択肢の値まで含めた検索対象（無ければ列名のみ＝従来動作）
-    haystack = (choice_index or {}).get(column, c)
+    haystack = index.get(column, c)
     score = 0
     for topic in _topic_hits(question):
         if any(normalize(alias) in c for alias in TOPICS[topic][1]):
             score += 20
     for fragment in _fragments(question):
+        if index and _is_noise(fragment, index):
+            continue
         if fragment in c:
-            score += len(fragment) * 2          # 設問文に出る語は強い根拠
-        elif fragment in haystack:
-            score += len(fragment)              # 選択肢に出る語は弱めの根拠
+            # 設問文に出る語が最も強い根拠。出現列が少ないほどさらに強い
+            rarity = 2 if index and _doc_freq(fragment, index) == 1 else 1
+            score += len(fragment) * 2 * rarity
+        elif fragment in haystack and len(fragment) >= 3:
+            # 選択肢は自由記述的で偶然かすることが多い。希少加点はせず、
+            # 2文字の偶然一致（「熱海に」の“に”のような助詞込み）も採らない。
+            score += len(fragment)
     for fragment in _synonym_fragments(question):
+        if index and _is_noise(fragment, index):
+            continue
         if fragment in c:
-            score += len(fragment)              # 言い換え一致は直接一致より弱く
+            score += len(fragment) * 2            # 言い換えでも設問文への一致は強い根拠
         elif fragment in haystack:
             score += 1
     for alias in prefer or []:
@@ -403,8 +448,11 @@ def _why_chosen(column: dict[str, Any], question: str, choice_index: dict[str, s
     name = column.get("name", "")
     c = normalize(name)
     hits_name, hits_choice = [], []
-    # 最長一致を優先したいので、長いn-gramから見て包含される短い断片は捨てる
+    # 最長一致を優先したいので、長いn-gramから見て包含される短い断片は捨てる。
+    # 全列に出る語（「熱海」等）は理由として無意味なので挙げない。
     for fragment in _fragments(question) + _synonym_fragments(question):
+        if choice_index and _is_noise(fragment, choice_index):
+            continue
         if fragment in c:
             if not any(fragment in seen for seen in hits_name):
                 hits_name.append(fragment)
