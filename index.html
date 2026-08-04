@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="知りたいことから、根拠付きのアンケート分析と次の設問を作る学生向け支援ツール">
+  <title>Survey Insight Copilot</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* 起動オーバーレイ。Pyodide（ブラウザ内Python）の読み込みは初回だけ時間がかかる */
+    #boot { position: fixed; inset: 0; display: grid; place-items: center;
+            background: #fff; z-index: 50; text-align: center; padding: 2rem; }
+    #boot[hidden] { display: none; }
+    #boot .boot-inner { max-width: 34rem; display: grid; gap: .7rem; }
+    #boot h1 { font-size: 1.15rem; margin: 0; }
+    #boot p { margin: 0; opacity: .78; font-size: .92rem; line-height: 1.7; }
+    #boot .bar { height: 3px; border-radius: 3px; overflow: hidden; background: rgba(0,0,0,.1); }
+    #boot .bar i { display: block; height: 100%; width: 35%; border-radius: 3px;
+                   background: currentColor; animation: bootslide 1.15s ease-in-out infinite; }
+    @keyframes bootslide { from { margin-left: -35%; } to { margin-left: 100%; } }
+    #boot .boot-error { color: #b4232a; }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#app">本文へ移動</a>
+  <header class="topbar">
+    <button class="brand" id="brandHome" type="button" aria-label="ホームへ戻る">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/><path d="M2 19h20"/></svg>
+      </span>
+      <span><strong>Survey Insight</strong><small>目的から分析と次の設問へ</small></span>
+    </button>
+    <div class="privacy-pill">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 7v5c0 4.5 3 7.5 8 9 5-1.5 8-4.5 8-9V7l-8-4Z"/><path d="m9 12 2 2 4-4"/></svg>
+      個票はこのブラウザ内だけで処理
+    </div>
+  </header>
+
+  <div id="boot" role="status" aria-live="polite">
+    <div class="boot-inner">
+      <h1>Survey Insight Copilot</h1>
+      <div class="bar" aria-hidden="true"><i></i></div>
+      <p id="bootStatus">起動しています</p>
+      <p><small>分析はすべてこのブラウザの中で実行します（Python / WebAssembly）。
+        回答データがサーバーへ送られることはありません。初回だけライブラリの
+        ダウンロードに10〜30秒ほどかかります。</small></p>
+    </div>
+  </div>
+
+  <main id="app" tabindex="-1"></main>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module">
+    // Python環境の準備が終わってから app.js を読み込む。
+    // app.js は起動時に api() を呼ぶので、先に読むと未初期化のまま走ってしまう。
+    import { ready } from './js/bridge.js';
+    const boot = document.getElementById('boot');
+    ready()
+      .then(async () => {
+        await import('./app.js');
+        boot.hidden = true;
+      })
+      .catch((error) => {
+        document.getElementById('bootStatus').innerHTML =
+          `<span class="boot-error">起動に失敗しました：${error.message}</span>`;
+        document.querySelector('#boot .bar')?.remove();
+      });
+  </script>
+</body>
+</html>

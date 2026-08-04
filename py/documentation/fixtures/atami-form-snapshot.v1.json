@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "id": "atami-student-tourism-2026",
+  "title": "熱海DMO 大学生観光実態アンケート",
+  "revision": "verified-local-2026-07-26",
+  "verifiedAt": "2026-07-26",
+  "questions": [
+    {
+      "id": "student_status",
+      "text": "あなたは現在、大学生または大学院生ですか？",
+      "columnMatch": {
+        "contains": "Are you currently a bachelors or masters student"
+      },
+      "expectedColumns": 1,
+      "combine": "single"
+    },
+    {
+      "id": "visited_atami",
+      "text": "これまでに熱海市を旅行・観光で訪れたことがありますか？",
+      "columnMatch": {
+        "contains": "Have you ever visited Atami City"
+      },
+      "expectedColumns": 2,
+      "combine": "first_non_empty"
+    },
+    {
+      "id": "considered_atami",
+      "text": "熱海に行こうと考えたことはありますか？",
+      "columnMatch": {
+        "contains": "Have you ever thought about going to Atami"
+      },
+      "expectedColumns": 1,
+      "combine": "single"
+    },
+    {
+      "id": "barriers",
+      "text": "行こうと思ったのに行かなかった理由は何ですか？",
+      "columnMatch": {
+        "contains": "reasons why you decided not to go"
+      },
+      "expectedColumns": 1,
+      "combine": "single"
+    },
+    {
+      "id": "desired",
+      "text": "熱海に来るとき、何をしてみたいですか？",
+      "columnMatch": {
+        "contains": "What would you like to do in Atami"
+      },
+      "expectedColumns": 1,
+      "combine": "single"
+    }
+  ],
+  "population": {
+    "label": "大学生・大学院生",
+    "predicate": {
+      "any": [
+        {
+          "questionId": "student_status",
+          "operator": "contains",
+          "value": "undergraduate"
+        },
+        {
+          "questionId": "student_status",
+          "operator": "contains",
+          "value": "graduate student"
+        }
+      ]
+    }
+  },
+  "cohort": {
+    "label": "熱海を検討したが未訪問の大学生・大学院生",
+    "prerequisites": [
+      "大学生または大学院生である",
+      "熱海への訪問経験が「いいえ」である",
+      "熱海に行こうと考えたことがある"
+    ],
+    "predicate": {
+      "all": [
+        {
+          "any": [
+            {
+              "questionId": "student_status",
+              "operator": "contains",
+              "value": "undergraduate"
+            },
+            {
+              "questionId": "student_status",
+              "operator": "contains",
+              "value": "graduate student"
+            }
+          ]
+        },
+        {
+          "questionId": "visited_atami",
+          "operator": "contains",
+          "value": "(No)"
+        },
+        {
+          "questionId": "considered_atami",
+          "operator": "contains",
+          "value": "I have thought about it"
+        }
+      ]
+    }
+  },
+  "analyses": [
+    {
+      "id": "barriers",
+      "questionId": "barriers",
+      "label": "行こうと思ったのに行かなかった理由",
+      "reachCondition": "大学生・大学院生 ∩ 熱海未訪問",
+      "reachWhen": {
+        "all": [
+          {
+            "any": [
+              {
+                "questionId": "student_status",
+                "operator": "contains",
+                "value": "undergraduate"
+              },
+              {
+                "questionId": "student_status",
+                "operator": "contains",
+                "value": "graduate student"
+              }
+            ]
+          },
+          {
+            "questionId": "visited_atami",
+            "operator": "contains",
+            "value": "(No)"
+          }
+        ]
+      },
+      "expected": {
+        "reachedN": 39,
+        "answeredN": 31,
+        "missingN": 8,
+        "excludedByBranchN": 76,
+        "cohortN": 24,
+        "cohortAnsweredN": 23,
+        "cohortMissingN": 1,
+        "unexpectedAnswerN": 0
+      }
+    },
+    {
+      "id": "desired",
+      "questionId": "desired",
+      "label": "熱海でしたいこと",
+      "reachCondition": "大学生・大学院生全員",
+      "reachWhen": {
+        "any": [
+          {
+            "questionId": "student_status",
+            "operator": "contains",
+            "value": "undergraduate"
+          },
+          {
+            "questionId": "student_status",
+            "operator": "contains",
+            "value": "graduate student"
+          }
+        ]
+      },
+      "expected": {
+        "reachedN": 115,
+        "answeredN": 115,
+        "missingN": 0,
+        "excludedByBranchN": 0,
+        "cohortN": 24,
+        "cohortAnsweredN": 24,
+        "cohortMissingN": 0,
+        "unexpectedAnswerN": 0
+      }
+    }
+  ]
+}
